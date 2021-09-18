@@ -34,6 +34,8 @@ for(p in required_packages) {
 }
 ```
 
+### UCI Open Dataset
+- [Online retail 2 dataset](http://archive.ics.uci.edu/ml/machine-learning-databases/00502/)
 
 ```{r}
 df_2009_2010 <- read_excel("online_retail_II.xlsx", sheet = "Year 2009-2010")
@@ -84,17 +86,32 @@ multiple_description_codes <- combined_years_df %>%
   summarise(unique_description_count = n_distinct(description)) %>%
   filter(unique_description_count>1)
 ```
-### Get the 
 
+### Get the last description for product codes with multiple descriptions
 ```{r}
-combined_years_df %>%
-  filter(stock_code %in% multiple_description_codes %>% pull(stock_code)) %>%
+descriptions_to_use <- combined_years_df %>%
+  filter(stock_code %in% unique(multiple_description_codes$stock_code)) %>%
   group_by(stock_code) %>%
-  summarise(last_description = last(description, order_by = -invoice_date))
+  summarise(last_description = last(description, order_by = invoice_date)) %>%
+  ungroup()
+
+### replace product descriptions for codes with multiples
+combined_years_df <- combined_years_df %>%
+  left_join(descriptions_to_use) %>%
+  mutate(description = ifelse(
+    is.na(last_description), 
+    description, 
+    last_description
+    )
+  ) %>%
+  select(-last_description)
+
+### check that all product codes now have one unique description
+combined_years_df %>%
+  group_by(stock_code) %>%
+  summarise(unique_descriptions = n_distinct(description)) %>%
+  count(unique_descriptions)
 ```
-
-
-
 
 ### Typical invoice size and quanity
 ```{r}
@@ -117,42 +134,12 @@ combined_years_df %>%
   select(-n)
 ```
 
-### Generate transaction format df | one row per invoice
+### Generate transaction format df (one row per invoice)
+- for each invoice, we concat the products purchased together separated by ":"
+
 ```{r}
-glimpse(combined_years_df)
-
-combined_years_df %>%
-  summarise(unique_descriptions = n_distinct(description),
-            unique_stock_codes = n_distinct(stock_code))
-
-### find instances where the same product description occurs multiple times in an invoice
-combined_years_df %>%
-  group_by(invoice, description) %>%
-  mutate(description_record_count = n()) %>%
-  ungroup() %>%
-  filter(description_record_count>1) %>%
-  view()
-
-combined_years_df %>%
-  group_by(stock_code) %>%
-  summarise(description_count = n_distinct(description)) %>%
-  ungroup() %>%
-  filter(description_count>1) %>%
-  view()
-
-combined_years_df %>%
-  filter(str_detect(stock_code, "ADJ")) %>%
-  view()
-
-# combined_years_df %>%
-#   filter(invoice==489488) %>% 
-#   filter(description=="CHARLIE LOLA BLUE HOT WATER BOTTLE")
-#   group_by(invoice) %>%
-#   summarise(unique_products = unique(description))
-
 transaction_format <- combined_years_df %>%
   group_by(invoice) %>%
-  ### paste on unique prevents duplicate product descriptions showing up in output
   summarise(products_purchased = paste0(unique(description), collapse = ":")) %>%
   select(-invoice) %>%
   ungroup()
@@ -165,18 +152,17 @@ sample_n(transaction_format, 5) %>%
 
 ### Read in data using arules package format
 - prevent duplicates from getting removed 
-
+- input data is in basket format with one row
+- representing an invoice of products
 
 ```{r}
 ### input data is in basket format with one row
 ### representing an invoice of products
 trans <- arules::read.transactions("online_retail_2_transactions.csv",
                            format = "basket",
-                           sep = ":",
-                           # cleans
-                           rm.duplicates=TRUE)
-# summary(trans)
+                           sep = ":")
 ```
+
 ### Item Freq
 ```{r}
 item_freq_df <- tibble(item = names(itemFrequency(trans)),
@@ -184,8 +170,15 @@ item_freq_df <- tibble(item = names(itemFrequency(trans)),
 
 item_freq_df %>%
   arrange(-item_order_frequency) %>%
-  head()
+  head(25) %>%
+  ggplot(aes(y=reorder(item, item_order_frequency),
+             x=item_order_frequency)) +
+  geom_col() +
+  theme(axis.text.y = element_text(size=6)) +
+  scale_y_discrete(label = function(x) stringr::str_trunc(x, 24))
+```
 
+```{r}
 support_set_1 <- eclat(trans,
        parameter = list(
              support=0.01,
@@ -203,6 +196,76 @@ support_set_1 %>%
 view(support_df_l1)
 ```
 
+```{r}
+retail_rules <- apriori(trans,
+                        parameter = list(
+                          support=0.01,
+                          confidence=0.01,
+                          minlen=2,
+                          maxlen=4
+                          )
+                        )
+
+summary(retail_rules)
+
+retail_rules %>% 
+      sort(by="support") %>%
+      head(10) %>%
+      inspect() %>%
+      view()
+
+### invoices by customer
+combined_years_df %>%
+  group_by(customer_id) %>%
+  summarise(invoice_count = n_distinct(invoice),
+            total_quantity = sum(quantity)) %>%
+  view()
+```
+
+
+```{r}
+library(ggraph)
+library(igraph)
+
+product_support_set_df <- retail_rules %>% 
+      sort(by="support") %>%
+      head(50) %>%
+      inspect()
+
+graph_set <- product_support_set_df %>%
+  select(lhs, rhs, support) %>%
+   graph_from_data_frame()
+
+ggraph(graph_set) + 
+    geom_edge_link0(alpha=0.4, color="grey40", show.legend = F) + 
+    geom_node_point() +
+    geom_node_label(aes(label = name), 
+                    color="dodgerblue",
+                    size=2, repel = TRUE, show.legend = F,
+                    segment.color="dodgerblue") +
+  labs(title="Top 50 Most Common Item Purchase Pairs")
+```
+
+
+### ggraph exploration products
+```{r}
+library(ggraph)
+library(igraph)
+
+### top x most common level 1 pairs
+graph_df_2 <- product_support_set_df %>% arrange(-support) %>% head(200)
+
+graph_2 <- graph_from_data_frame(graph_df_2)
+
+# Not specifying the layout - defaults to "auto"
+ggraph(graph_2, layout = "stress") + 
+    geom_edge_link0(alpha=0.4, color="grey40", show.legend = F) + 
+    geom_node_point() +
+    geom_node_label(aes(label = name), 
+                    color="dodgerblue",
+                    size=2, repel = TRUE, show.legend = F,
+                    segment.color="dodgerblue") +
+  labs(title="Top 200 Most Common Item Purchase Pairs")
 
 
 
