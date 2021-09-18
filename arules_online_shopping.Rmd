@@ -1,0 +1,214 @@
+---
+title: "Association rules modeling"
+output: rmarkdown::github_document
+always_allow_html: yes
+---
+
+### Notebook objective
+- Explore using association rules for online shopping data pattern/trend discovery.
+
+### Association rules overview
+- Aka Marketing Basket Analysis
+- Historically, association rules models have been used to discover interesting patterns in retailer purchasing data. 
+- However, association rules can be used in other domains like content streaming, social networks, etc. 
+- This sort of analysis could power a similar products you might like feature, be used for selecting upsell products in a checkout flow, email marketing/promotions, etc.
+- We generate rules for an item set of items. The item set could be one or more items. Think of an item here as a movie or retailer product SKU.
+- Problem: brute force frequency calculation of all possible combinations of items is computationally expensive. 
+- Modeling thresholds and [apriori principle](https://en.wikipedia.org/wiki/Apriori_algorithm) used to prune back the number of association calculations required.
+
+### Key metrics: apriori model from arules package
+- Support: frequency of users to buy A and B
+- Confidence: of users to who buy A what percent also buy B
+- Lift: how likely are users to buy B with A, while controlling for how popular B is. Positive value more likely. negative value less likely.
+- Rules can we sorted/prioritized by various metrics depending on use case.
+- Rules can included more more than two items (i.e (A, B => C).
+- - [Arules intro paper](https://cran.r-project.org/web/packages/arules/vignettes/arules.pdf)
+
+###  Packages
+```{r}
+required_packages <- c('tidyverse', 'treemap', 'arules', 'arulesViz', 
+                       'scales', 'readxl', 'janitor', 'mdsr')
+
+for(p in required_packages) {
+  library(p,character.only = TRUE)
+}
+```
+
+
+```{r}
+df_2009_2010 <- read_excel("online_retail_II.xlsx", sheet = "Year 2009-2010")
+
+df_2009_2010_tbl <- tibble::as_tibble(
+    df_2009_2010, 
+    .name_repair = janitor::make_clean_names
+  ) %>%
+  mutate(data_file_key = "2009_2010")
+
+df_2010_2011 <- read_excel("online_retail_II.xlsx", sheet = "Year 2010-2011")
+
+df_2010_2011_tbl <- tibble::as_tibble(
+    df_2010_2011, 
+    .name_repair = janitor::make_clean_names
+  ) %>% 
+  mutate(data_file_key = "2010_2011")
+
+combined_years_df <- bind_rows(df_2009_2010_tbl, df_2010_2011_tbl)
+
+combined_years_df <- combined_years_df %>%
+  mutate(canceled_order = !is.na(str_extract(invoice, "^C"))) %>%
+  filter(canceled_order==F & !is.na(customer_id)) %>%
+  # filter out adjustment records
+  filter(!str_detect(stock_code, "ADJUST"))
+
+### clean product descriptions of punctuation
+### prevents parsing issues downstream when using ":" to separate products
+combined_years_df <- combined_years_df %>%
+  mutate(description = str_replace_all(description, "[:punct:]", ""),
+         description = str_replace_all(description, "  ", " "))
+```
+
+### Some product codes have multiple descriptions
+- need consistent product descriptions for arules generation
+- ~12% of product codes have more than one description
+
+```{r}
+### number of items with multiple descriptions
+combined_years_df %>%
+  group_by(stock_code) %>%
+  summarise(unique_description_count = n_distinct(description)) %>%
+  count(unique_description_count) %>%
+  mutate(percent_total = n/sum(n))
+
+multiple_description_codes <- combined_years_df %>%
+  group_by(stock_code) %>%
+  summarise(unique_description_count = n_distinct(description)) %>%
+  filter(unique_description_count>1)
+```
+### Get the 
+
+```{r}
+combined_years_df %>%
+  filter(stock_code %in% multiple_description_codes %>% pull(stock_code)) %>%
+  group_by(stock_code) %>%
+  summarise(last_description = last(description, order_by = -invoice_date))
+```
+
+
+
+
+### Typical invoice size and quanity
+```{r}
+### invoice level summary starts
+combined_years_df %>%
+  group_by(invoice) %>%
+  summarise(products_purchased = n_distinct(stock_code),
+            average_quanity = mean(quantity)) %>%
+  mdsr::skim() %>%
+  select(-n)
+```
+
+### Customer level summary stats
+```{r}
+combined_years_df %>%
+  group_by(cust_char = as.character(customer_id)) %>%
+  summarise(number_of_invoices = n_distinct(invoice),
+            products_purchased = n_distinct(stock_code)) %>%
+  mdsr::skim() %>%
+  select(-n)
+```
+
+### Generate transaction format df | one row per invoice
+```{r}
+glimpse(combined_years_df)
+
+combined_years_df %>%
+  summarise(unique_descriptions = n_distinct(description),
+            unique_stock_codes = n_distinct(stock_code))
+
+### find instances where the same product description occurs multiple times in an invoice
+combined_years_df %>%
+  group_by(invoice, description) %>%
+  mutate(description_record_count = n()) %>%
+  ungroup() %>%
+  filter(description_record_count>1) %>%
+  view()
+
+combined_years_df %>%
+  group_by(stock_code) %>%
+  summarise(description_count = n_distinct(description)) %>%
+  ungroup() %>%
+  filter(description_count>1) %>%
+  view()
+
+combined_years_df %>%
+  filter(str_detect(stock_code, "ADJ")) %>%
+  view()
+
+# combined_years_df %>%
+#   filter(invoice==489488) %>% 
+#   filter(description=="CHARLIE LOLA BLUE HOT WATER BOTTLE")
+#   group_by(invoice) %>%
+#   summarise(unique_products = unique(description))
+
+transaction_format <- combined_years_df %>%
+  group_by(invoice) %>%
+  ### paste on unique prevents duplicate product descriptions showing up in output
+  summarise(products_purchased = paste0(unique(description), collapse = ":")) %>%
+  select(-invoice) %>%
+  ungroup()
+
+write_csv(transaction_format, "online_retail_2_transactions.csv")
+
+sample_n(transaction_format, 5) %>%
+  glimpse()
+```
+
+### Read in data using arules package format
+- prevent duplicates from getting removed 
+
+
+```{r}
+### input data is in basket format with one row
+### representing an invoice of products
+trans <- arules::read.transactions("online_retail_2_transactions.csv",
+                           format = "basket",
+                           sep = ":",
+                           # cleans
+                           rm.duplicates=TRUE)
+# summary(trans)
+```
+### Item Freq
+```{r}
+item_freq_df <- tibble(item = names(itemFrequency(trans)),
+                    item_order_frequency = itemFrequency(trans))
+
+item_freq_df %>%
+  arrange(-item_order_frequency) %>%
+  head()
+
+support_set_1 <- eclat(trans,
+       parameter = list(
+             support=0.01,
+             minlen=2,
+             maxlen=2
+       ))
+
+support_set_1 %>%
+  inspect()
+  
+  mutate(items = str_remove_all(items, "\\{"),
+         items = str_remove_all(items, "\\}")) %>%
+  separate(items, c("a", "b"), sep = ",")
+
+view(support_df_l1)
+```
+
+
+
+
+### Open Questions
+- why would the customer id be NULL?
+
+
+
+
