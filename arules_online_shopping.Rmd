@@ -1,33 +1,36 @@
 ---
-title: "Association rules modeling"
+title: "Association rules modeling | UCI retail shopping 2 dataset"
 output: rmarkdown::github_document
 always_allow_html: yes
 ---
 
+```{r echo=FALSE, include = FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+
 ### Notebook objective
-- Explore using association rules for online shopping data pattern/trend discovery.
+- Explore using association rules for e-commerce pattern/trend discovery.
 
-### Association rules overview
-- Aka Marketing Basket Analysis
-- Historically, association rules models have been used to discover interesting patterns in retailer purchasing data. 
+### Association rules overview (AKA marketing basket analysis)
+- Historically, association rules models have been used to discover interesting patterns in retailer/shopping purchasing data. 
 - However, association rules can be used in other domains like content streaming, social networks, etc. 
-- This sort of analysis could power a similar products you might like feature, be used for selecting upsell products in a checkout flow, email marketing/promotions, etc.
-- We generate rules for an item set of items. The item set could be one or more items. Think of an item here as a movie or retailer product SKU.
-- Problem: brute force frequency calculation of all possible combinations of items is computationally expensive. 
-- Modeling thresholds and [apriori principle](https://en.wikipedia.org/wiki/Apriori_algorithm) used to prune back the number of association calculations required.
+- This technique could power a similar products you might like feature, be used for electing upsell products in a checkout flow, email marketing/promotions, etc.
+- With association rules we generate rules for an item set of items. The item set could be one or more items. Think of an item here as a movie or retailer product SKU.
+- Brute force frequency calculation of all item set combinations is computationally expensive. 
+- Model thresholds and [apriori principle](https://en.wikipedia.org/wiki/Apriori_algorithm) are used to prune back the number of association calculations required. 
 
-### Key metrics: apriori model from arules package
-- Support: frequency of users to buy A and B
+### Key metrics
+- Support: frequency of users to purchase an item (e.g. could be just product A or product A & B, etc)
 - Confidence: of users to who buy A what percent also buy B
-- Lift: how likely are users to buy B with A, while controlling for how popular B is. Positive value more likely. negative value less likely.
+- Lift: how likely are users to buy B with A, while controlling for how popular B is (positive value more likely, negative value less likely).
 - Rules can we sorted/prioritized by various metrics depending on use case.
 - Rules can included more more than two items (i.e (A, B => C).
-- - [Arules intro paper](https://cran.r-project.org/web/packages/arules/vignettes/arules.pdf)
+- [Arules Package Intro Paper](https://cran.r-project.org/web/packages/arules/vignettes/arules.pdf)
 
 ###  Packages
 ```{r}
-required_packages <- c('tidyverse', 'treemap', 'arules', 'arulesViz', 
-                       'scales', 'readxl', 'janitor', 'mdsr')
+required_packages <- c('tidyverse', 'arules', 'arulesViz', 
+                       'scales', 'readxl', 'janitor')
 
 for(p in required_packages) {
   library(p,character.only = TRUE)
@@ -35,68 +38,64 @@ for(p in required_packages) {
 ```
 
 ### UCI Open Dataset
+- [Data dictionary and background context](https://archive.ics.uci.edu/ml/datasets/Online+Retail+II)
 - [Online retail 2 dataset](http://archive.ics.uci.edu/ml/machine-learning-databases/00502/)
 
 ```{r}
-df_2009_2010 <- read_excel("online_retail_II.xlsx", sheet = "Year 2009-2010")
+# read online retail Execl from working directory
+df_2010_2011_raw <- read_excel("online_retail_II.xlsx", sheet = "Year 2010-2011")
 
-df_2009_2010_tbl <- tibble::as_tibble(
-    df_2009_2010, 
+# clean column names
+df_2010_2011 <- 
+  tibble::as_tibble(
+    df_2010_2011_raw, 
     .name_repair = janitor::make_clean_names
-  ) %>%
-  mutate(data_file_key = "2009_2010")
+  )
 
-df_2010_2011 <- read_excel("online_retail_II.xlsx", sheet = "Year 2010-2011")
-
-df_2010_2011_tbl <- tibble::as_tibble(
-    df_2010_2011, 
-    .name_repair = janitor::make_clean_names
-  ) %>% 
-  mutate(data_file_key = "2010_2011")
-
-combined_years_df <- bind_rows(df_2009_2010_tbl, df_2010_2011_tbl)
-
-combined_years_df <- combined_years_df %>%
+# filter out adjustment records, cancel records, 
+df_2010_2011 <- df_2010_2011 %>%
   mutate(canceled_order = !is.na(str_extract(invoice, "^C"))) %>%
-  filter(canceled_order==F & !is.na(customer_id)) %>%
-  # filter out adjustment records
+  filter(canceled_order == F & !is.na(customer_id)) %>%
   filter(!str_detect(stock_code, "ADJUST"))
 
 ### clean product descriptions of punctuation
-### prevents parsing issues downstream when using ":" to separate products
-combined_years_df <- combined_years_df %>%
+### prevents parsing issues downstream when using ":" for data setup
+df_2010_2011 <- df_2010_2011 %>%
   mutate(description = str_replace_all(description, "[:punct:]", ""),
          description = str_replace_all(description, "  ", " "))
 ```
 
 ### Some product codes have multiple descriptions
-- need consistent product descriptions for arules generation
-- ~12% of product codes have more than one description
+- Need consistent product descriptions for arules generation.
+- ~5% of product codes have more than one description.
 
 ```{r}
 ### number of items with multiple descriptions
-combined_years_df %>%
+df_2010_2011 %>%
   group_by(stock_code) %>%
   summarise(unique_description_count = n_distinct(description)) %>%
-  count(unique_description_count) %>%
-  mutate(percent_total = n/sum(n))
+  group_by(unique_description_count) %>%
+  summarise(stock_code_count = n_distinct(stock_code)) %>%
+  mutate(percent_total = stock_code_count/sum(stock_code_count)*100)
 
-multiple_description_codes <- combined_years_df %>%
+multiple_description_codes <- df_2010_2011 %>%
   group_by(stock_code) %>%
   summarise(unique_description_count = n_distinct(description)) %>%
   filter(unique_description_count>1)
 ```
 
-### Get the last description for product codes with multiple descriptions
+### Product description clean up
+- Data cleaning approach to handle cases where stock codes could have multiple descriptions.
+
 ```{r}
-descriptions_to_use <- combined_years_df %>%
+descriptions_to_use <- df_2010_2011 %>%
   filter(stock_code %in% unique(multiple_description_codes$stock_code)) %>%
   group_by(stock_code) %>%
   summarise(last_description = last(description, order_by = invoice_date)) %>%
   ungroup()
 
 ### replace product descriptions for codes with multiples
-combined_years_df <- combined_years_df %>%
+df_2010_2011 <- df_2010_2011 %>%
   left_join(descriptions_to_use) %>%
   mutate(description = ifelse(
     is.na(last_description), 
@@ -104,66 +103,66 @@ combined_years_df <- combined_years_df %>%
     last_description
     )
   ) %>%
-  select(-last_description)
+  dplyr::select(-last_description)
 
 ### check that all product codes now have one unique description
-combined_years_df %>%
+df_2010_2011 %>%
   group_by(stock_code) %>%
   summarise(unique_descriptions = n_distinct(description)) %>%
-  count(unique_descriptions)
+  dplyr::count(unique_descriptions)
 ```
 
 ### Typical invoice size and quanity
+- Typical invoice order contains 15 (median) stock codes.
+
 ```{r}
 ### invoice level summary starts
-combined_years_df %>%
+df_2010_2011 %>%
   group_by(invoice) %>%
   summarise(products_purchased = n_distinct(stock_code),
-            average_quanity = mean(quantity)) %>%
-  mdsr::skim() %>%
-  select(-n)
+            average_quanity = mean(quantity),
+            .groups = "drop") %>%
+  summary()
 ```
 
 ### Customer level summary stats
+- Median number of invoices per customer: 2.
+
 ```{r}
-combined_years_df %>%
+df_2010_2011 %>%
   group_by(cust_char = as.character(customer_id)) %>%
   summarise(number_of_invoices = n_distinct(invoice),
-            products_purchased = n_distinct(stock_code)) %>%
-  mdsr::skim() %>%
-  select(-n)
+            products_purchased = n_distinct(stock_code),
+            .groups = "drop") %>%
+  summary()
 ```
 
-### Generate transaction format df (one row per invoice)
-- for each invoice, we concat the products purchased together separated by ":"
+### Generate transaction format (one row per invoice)
+- For each invoice, we concat the products purchased by ":".
+- This approach generates a basket format csv which is a input format for the arules package.
 
 ```{r}
-transaction_format <- combined_years_df %>%
+transaction_format <- df_2010_2011 %>%
   group_by(invoice) %>%
   summarise(products_purchased = paste0(unique(description), collapse = ":")) %>%
-  select(-invoice) %>%
+  dplyr::select(-invoice) %>%
   ungroup()
 
 write_csv(transaction_format, "online_retail_2_transactions.csv")
-
-sample_n(transaction_format, 5) %>%
-  glimpse()
 ```
 
 ### Read in data using arules package format
-- prevent duplicates from getting removed 
-- input data is in basket format with one row
-- representing an invoice of products
+- Input data is in basket format with one row representing a character string of products included in a customers invoice.
 
 ```{r}
-### input data is in basket format with one row
-### representing an invoice of products
 trans <- arules::read.transactions("online_retail_2_transactions.csv",
                            format = "basket",
                            sep = ":")
 ```
 
-### Item Freq
+### Most Commons Products
+- Popular products related to party supplies and party gifts (aligns with data source info which states the data is from a company which mainly sells unique all-occasion gift-ware).
+
 ```{r}
 item_freq_df <- tibble(item = names(itemFrequency(trans)),
                     item_order_frequency = itemFrequency(trans))
@@ -175,103 +174,119 @@ item_freq_df %>%
              x=item_order_frequency)) +
   geom_col() +
   theme(axis.text.y = element_text(size=6)) +
-  scale_y_discrete(label = function(x) stringr::str_trunc(x, 24))
+  scale_y_discrete(label = function(x) stringr::str_trunc(x, 24)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy=1),
+                     breaks = seq(0, 1, by=0.01)) +
+  theme_minimal() +
+  labs(title="Top 25 Most Common Products Purchased",
+       y="Product",
+       x="Support (Purchase Frequency)")
 ```
 
-```{r}
-support_set_1 <- eclat(trans,
-       parameter = list(
-             support=0.01,
-             minlen=2,
-             maxlen=2
-       ))
+### Most common product pairs ordered
+- Eclat algorithm to find most common item pairs, etc.
 
-support_set_1 %>%
-  inspect()
+```{r}
+item_pairs <- eclat(trans, parameter = list(support=0.005, minlen=2, maxlen=2))
+
+sort(item_pairs, by = 'support') %>% 
+  as("data.frame") %>%
+  head(10) %>%
+  dplyr::select(-transIdenticalToItemsets)
+```
   
-  mutate(items = str_remove_all(items, "\\{"),
-         items = str_remove_all(items, "\\}")) %>%
-  separate(items, c("a", "b"), sep = ",")
-
-view(support_df_l1)
+##### Exclude item pairs that contain BAG or BOX
+```{r}
+sort(item_pairs, by = 'support') %>%
+  as("data.frame") %>%
+  filter(!str_detect(items, "BAG | BOX")) %>%
+  head(10) %>%
+  dplyr::select(-transIdenticalToItemsets)
 ```
 
+### Most Commons Product Trios Ordered
 ```{r}
-retail_rules <- apriori(trans,
+item_trios <- eclat(trans, parameter = list(support=0.005, minlen=3, maxlen=3))
+
+sort(item_trios, by = 'support') %>%
+  as("data.frame") %>%
+  head(10) %>%
+  dplyr::select(-transIdenticalToItemsets)
+```
+
+### Apriori algorithm
+- Eclat generates metrics per itemset `{A, B}`.
+- Apriori algo generates metrics comparing itemsets and outputs rules `{A => B}`.
+
+```{r}
+retail_rules <- apriori(trans, 
                         parameter = list(
-                          support=0.01,
-                          confidence=0.01,
+                          support=0.005,
+                          confidence=0.005,
                           minlen=2,
                           maxlen=4
                           )
                         )
 
 summary(retail_rules)
+```
 
+##### Top 10 rules by support
+```{r}
 retail_rules %>% 
-      sort(by="support") %>%
-      head(10) %>%
-      inspect() %>%
-      view()
-
-### invoices by customer
-combined_years_df %>%
-  group_by(customer_id) %>%
-  summarise(invoice_count = n_distinct(invoice),
-            total_quantity = sum(quantity)) %>%
-  view()
+  as("data.frame") %>%
+  arrange(-support) %>%
+  head(10)
+```
+##### Top 10 rules by confidence
+```{r}
+retail_rules %>% 
+  as("data.frame") %>%
+  arrange(-confidence) %>%
+  head(10)
 ```
 
-
+##### Top 10 rules by lift
 ```{r}
-library(ggraph)
-library(igraph)
-
-product_support_set_df <- retail_rules %>% 
-      sort(by="support") %>%
-      head(50) %>%
-      inspect()
-
-graph_set <- product_support_set_df %>%
-  select(lhs, rhs, support) %>%
-   graph_from_data_frame()
-
-ggraph(graph_set) + 
-    geom_edge_link0(alpha=0.4, color="grey40", show.legend = F) + 
-    geom_node_point() +
-    geom_node_label(aes(label = name), 
-                    color="dodgerblue",
-                    size=2, repel = TRUE, show.legend = F,
-                    segment.color="dodgerblue") +
-  labs(title="Top 50 Most Common Item Purchase Pairs")
+retail_rules %>% 
+  as("data.frame") %>%
+  arrange(-lift) %>%
+  head(10)
 ```
 
+### Visualizing rules
+- Plot function part of the arulesViz package is used to visualize rules. [Documentation on customization options](https://rdrr.io/cran/arulesViz/man/plot.html)
+- Visualizations and rule metrics to focus on likely to be informed by business objective.
 
-### ggraph exploration products
+##### Scatter plot of rule support, confidence, lift metrics
+- Top 100 rules ranked by support.
+
 ```{r}
-library(ggraph)
-library(igraph)
+plot(sort(retail_rules, by="support")[1:100])
+```
 
-### top x most common level 1 pairs
-graph_df_2 <- product_support_set_df %>% arrange(-support) %>% head(200)
+##### Network graph of rules
 
-graph_2 <- graph_from_data_frame(graph_df_2)
+Top 20 rules ranked by support.
+```{r}
+plot(sort(retail_rules, by="support")[1:20], 
+     method="graph", 
+     cex=0.7)
+```
 
-# Not specifying the layout - defaults to "auto"
-ggraph(graph_2, layout = "stress") + 
-    geom_edge_link0(alpha=0.4, color="grey40", show.legend = F) + 
-    geom_node_point() +
-    geom_node_label(aes(label = name), 
-                    color="dodgerblue",
-                    size=2, repel = TRUE, show.legend = F,
-                    segment.color="dodgerblue") +
-  labs(title="Top 200 Most Common Item Purchase Pairs")
+Top 20 rules ranked by confidence. Adjust plot params.
+```{r}
+plot(sort(retail_rules, by="confidence")[1:20], 
+     method="graph", 
+     measure="confidence",
+     shading = "support",
+     cex=0.7)
+```
 
-
-
-### Open Questions
-- why would the customer id be NULL?
-
-
-
-
+### Ideas for applying these techniques in an actionable business setting 
+- Marketing teams could build packages/promos for common products customers buy together (using above data).
+- Have a UX flow that makes it easy to buy variations of parent SKU (i.e. a few clicks to buy 200 lunch boxes with 10 different color patterns). Arules data can suggest product areas to focus on first.
+- Additional product meta data could be used to explore purchasing trends at the category or sub category level.
+- Segment data by customer type and purchase frequency (i.e. geo, wholesalers, SMBs, individual customers).
+- Recommendation features that leverage arules package rules to suggest products a customer might also like.
+- Interactive data visualizations could be used to empower internal stakeholders to explore arules trends via self-service tools.
