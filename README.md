@@ -59,17 +59,17 @@ for(p in required_packages) {
 <!-- end list -->
 
 ``` r
-# read online retail Execl from working directory
+### read online retail Execl from working directory
 df_2010_2011_raw <- read_excel("online_retail_II.xlsx", sheet = "Year 2010-2011")
 
-# clean column names
+### clean column names
 df_2010_2011 <- 
   tibble::as_tibble(
     df_2010_2011_raw, 
     .name_repair = janitor::make_clean_names
   )
 
-# filter out adjustment records, cancel records, 
+### filter out adjustment records, cancel records
 df_2010_2011 <- df_2010_2011 %>%
   mutate(canceled_order = !is.na(str_extract(invoice, "^C"))) %>%
   filter(canceled_order == F & !is.na(customer_id)) %>%
