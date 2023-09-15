@@ -34,7 +34,7 @@ Association rules modeling | UCI retail shopping 2 dataset
     likely).
   - Rules can we sorted/prioritized by various metrics depending on use
     case.
-  - Rules can included more more than two items (i.e (A, B =\> C).
+  - Rules can included more than two items (i.e (A, B =\> C).
   - [Arules Package Intro
     Paper](https://cran.r-project.org/web/packages/arules/vignettes/arules.pdf)
 
